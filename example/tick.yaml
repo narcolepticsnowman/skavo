@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example-tick
+spec:
+  containers:
+    - name: tick
+      image: narcolepticsnowman/tick
