@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"log"
+	"time"
+)
 
 func main() {
 	ch := make(chan bool)
@@ -10,7 +13,7 @@ func main() {
 	go func() {
 		for {
 			<-ticker.C
-			println("tick")
+			log.Printf("tick %d\n", time.Now().UnixNano())
 		}
 	}()
 

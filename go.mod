@@ -1,6 +1,6 @@
-module skavo
+module github.com/narcolepticsnowman/skavo
 
-go 1.14
+go 1.15
 
 require (
 	github.com/AlecAivazis/survey/v2 v2.2.7

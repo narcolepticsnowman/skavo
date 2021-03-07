@@ -5,4 +5,5 @@ metadata:
 spec:
   containers:
     - name: tick
-      image: narcolepticsnowman/tick
+      image: ncsnw/tick
+      imagePullPolicy: IfNotPresent
