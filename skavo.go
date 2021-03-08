@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
+	"fmt"
 	"path/filepath"
 
 	v1 "k8s.io/api/core/v1"
@@ -24,6 +24,7 @@ func main() {
 	processFilter := flag.String("process", "", "Filter the list of processes in a container")
 	namespace := flag.String("namespace", "default", "Specify the namespace instead of using default. Use namespace \"ALL\" to view all namespaces")
 	isRestart := flag.Bool("restart", false, "Restart the process using delve instead of attaching to the existing process.")
+	isRelaunch := flag.Bool("relaunch", false, "Relaunch the pod with delve exec. Warning: this will restart all pods under the parent resource (ReplicaSet, Deployment, etc)")
 	localPort := flag.String("localport", "34455", "Specify the host machine port to forward to the pod port")
 	podPort := flag.String("podport", "55443", "Specify the pod port for delve to listen on")
 	flag.Parse()
@@ -38,18 +39,18 @@ func main() {
 		podList := client.ListPods(ns)
 
 		pod = prompt.SelectPod(podList.Items)
-		log.Printf("Selected pod: %s\n", pod.Name)
+		fmt.Printf("Selected pod: %s\n", pod.Name)
 	} else {
 		var err error
 		pod, err = client.CoreClient.Pods(ns).Get(context.TODO(), *podName, metav1.GetOptions{})
 		if err != nil {
-			log.Fatal("Failed to get pod: ", podName, err)
+			panic(fmt.Errorf("failed to get pod: %s. %+v", *podName, err))
 		}
 	}
 	if *containerName == "" {
 		container := prompt.SelectContainer(pod.Spec.Containers)
 		containerName = &container.Name
-		log.Printf("Selected container: %s\n", container.Name)
+		fmt.Printf("Selected container: %s\n", container.Name)
 	}
 
 	processes := client.ListProcesses(pod, *containerName)
@@ -65,9 +66,11 @@ func main() {
 		PodPort:       *podPort,
 	}
 	if *isRestart {
-		pd.RelaunchPodWithDelve()
+		pd.RestartProcess()
+	} else if *isRelaunch {
+		pd.Relaunch(pod)
 	} else {
-		pd.AttachDelveToProcess()
+		pd.AttachToProcess()
 	}
 
 }

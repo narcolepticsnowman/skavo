@@ -2,7 +2,6 @@ package prompt
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"regexp"
 
@@ -18,14 +17,14 @@ func SelectPod(pods []v1.Pod) *v1.Pod {
 		podNames[i] = pod.Name
 	}
 	if len(pods) < 1 {
-		log.Fatal("No pods found.")
+		panic("no pods found")
 	}
 	return &pods[GetSelection("Select a Pod:", podNames)]
 }
 
 func SelectContainer(containers []v1.Container) v1.Container {
 	if len(containers) < 2 {
-		log.Println("One container found")
+		fmt.Println("One container found")
 		return containers[0]
 	}
 	containerNames := make([]string, len(containers))
@@ -47,7 +46,7 @@ func SelectProcess(processList []k8s.ContainerProcess, processFilter string) k8s
 		processList = filtered
 	}
 	if len(processList) < 2 {
-		log.Println("One process found")
+		fmt.Println("One process found")
 		return processList[0]
 	}
 	commands := make([]string, len(processList))

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
 	"path"
@@ -17,9 +16,8 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/client-go/kubernetes/scheme"
+	appsv1client "k8s.io/client-go/kubernetes/typed/apps/v1"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -29,36 +27,20 @@ import (
 )
 
 type Client struct {
-	Client     *rest.RESTClient
 	CoreClient *corev1client.CoreV1Client
+	AppsClient *appsv1client.AppsV1Client
 	config     *rest.Config
 }
 
 func NewK8sClient(context string, kubeconfig *string) *Client {
-	// use the current context in kubeconfig
 	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		&clientcmd.ClientConfigLoadingRules{ExplicitPath: *kubeconfig},
-		&clientcmd.ConfigOverrides{
-			CurrentContext: context,
-		}).ClientConfig()
+		&clientcmd.ConfigOverrides{CurrentContext: context},
+	).ClientConfig()
 	if err != nil {
 		panic(fmt.Errorf("failed to build config %w", err))
 	}
-
-	if config.GroupVersion == nil {
-		config.GroupVersion = &v1.SchemeGroupVersion
-	}
-	config.NegotiatedSerializer = serializer.WithoutConversionCodecFactory{CodecFactory: scheme.Codecs}
-	config.APIPath = "/api"
-	config.ContentType = runtime.ContentTypeJSON
-
-	client, err := rest.RESTClientFor(config)
-
-	if err != nil {
-		panic(fmt.Errorf("failed to create rest Client %w", err))
-	}
-
-	return &Client{client, corev1client.New(client), config}
+	return &Client{corev1client.NewForConfigOrDie(config), appsv1client.NewForConfigOrDie(config), config}
 }
 
 func (kc *Client) ListPods(namespace string) *v1.PodList {
@@ -128,7 +110,7 @@ func (kc *Client) Exec(
 		opts = ExecOptions{}
 	}
 
-	req := kc.Client.Post().
+	req := kc.CoreClient.RESTClient().Post().
 		Resource("pods").
 		Name(podName).
 		Namespace(namespace).
@@ -143,7 +125,7 @@ func (kc *Client) Exec(
 
 	exec, err := remotecommand.NewSPDYExecutor(kc.config, "POST", req.URL())
 	if err != nil {
-		log.Fatal("Failed to create executor: ", err)
+		panic(fmt.Errorf("failed to create executor: %+v", err))
 	}
 	//return p.Executor.Execute("POST", req.URL(), p.Config, p.In, p.Out, p.ErrOut, t.Raw, sizeQueue)
 	err = exec.Stream(remotecommand.StreamOptions{
@@ -153,7 +135,7 @@ func (kc *Client) Exec(
 	})
 
 	if err != nil {
-		log.Fatal("failed to exec: ", err)
+		panic(fmt.Errorf("failed to exec: %+v", err))
 	}
 }
 
@@ -186,30 +168,30 @@ func (kc *Client) CopyToPod(namespace string, podName string, containerName stri
 }
 
 func (kc *Client) ForwardPort(namespace string, podName string, localPort string, podPort string) <-chan struct{} {
-	method := "POST"
-	url := kc.Client.Post().
+	url := kc.CoreClient.RESTClient().Post().
 		Resource("pods").
 		Namespace(namespace).
 		Name(podName).
-		SubResource("portforward").URL()
+		SubResource("portforward").
+		URL()
 	transport, upgrader, err := spdy.RoundTripperFor(kc.config)
 	if err != nil {
-		log.Fatal("failed round trippin': ", err)
+		panic(fmt.Errorf("failed round trippin': %+v", err))
 	}
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, method, url)
+	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, "POST", url)
 	stopChan := make(chan struct{})
 	readyChan := make(chan struct{})
 	fw, err := portforward.NewOnAddresses(dialer, []string{"127.0.0.1"}, []string{localPort + ":" + podPort}, stopChan, readyChan, os.Stdout, os.Stderr)
 	if err != nil {
-		log.Fatal("Failed to create port forward: ", err)
+		panic(fmt.Errorf("failed to create port forward: %+v", err))
 	}
 	err = fw.ForwardPorts()
 	if err != nil {
-		log.Fatal("Failed to forward ports: ", err)
+		panic(fmt.Errorf("failed to forward ports: %+v", err))
 	}
-	log.Println("Waiting for port forward to be ready...")
+	fmt.Println("Waiting for port forward to be ready...")
 	<-readyChan
-	log.Println("Ports forwarded!...")
+	fmt.Println("Ports forwarded!...")
 	return stopChan
 }
 
@@ -221,7 +203,7 @@ func makeTar(srcPath, destPath string, writer io.Writer) {
 	destPath = path.Clean(destPath)
 	err := recursiveTar(path.Dir(srcPath), path.Base(srcPath), path.Dir(destPath), path.Base(destPath), tarWriter)
 	if err != nil {
-		log.Fatal("Failed to make tar file to send to pod: ", err)
+		panic(fmt.Errorf("failed to make tar file to send to pod: %+v", err))
 	}
 }
 
