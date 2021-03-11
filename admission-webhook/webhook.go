@@ -111,6 +111,7 @@ func admit(ar v1beta1.AdmissionReview) *v1beta1.AdmissionResponse {
 }
 
 func main() {
+
 	codecs := serializer.NewCodecFactory(runtime.NewScheme())
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", func(w http.ResponseWriter, r *http.Request) {

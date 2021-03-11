@@ -9,14 +9,32 @@ import (
 	"strings"
 	"time"
 
+	regv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	certificatesv1 "k8s.io/api/certificates/v1"
 	v1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/narcolepticsnowman/go-mirror/mirror"
 
 	"github.com/narcolepticsnowman/skavo/pkg/k8s"
+)
+
+const (
+	configMapName           = "skavo-entrypoint-sh"
+	skavoWebhookName        = "skavo-webhook"
+	skavoWebhookServiceName = "skavo-webhook-service"
+	skavoWebhookSecretName  = "skavo-webhook-secret"
+	skavoNamespace          = "skavo-system"
+	skavoServiceAccount     = "skavo-service-account"
+	skavoClusterRole        = "skavo-cluster-role"
+	skavoClusterRoleBinding = "skavo-cluster-role-binding"
+	skavoEntrypointShName   = "/skavoEntrypoint.sh"
 )
 
 type PodDelve struct {
@@ -90,43 +108,26 @@ func (pd *PodDelve) getResource(kind string, name string) runtime.Object {
 	return res
 }
 
-func (pd *PodDelve) updateResource(kind string, obj runtime.Object) runtime.Object {
-	var res runtime.Object
-	var err error
-	switch kind {
-	case "Deployment":
-		res, err = pd.Client.AppsClient.Deployments(pd.Namespace).Update(context.TODO(), obj.(*appsv1.Deployment), metav1.UpdateOptions{})
-	case "StatefulSet":
-		res, err = pd.Client.AppsClient.StatefulSets(pd.Namespace).Update(context.TODO(), obj.(*appsv1.StatefulSet), metav1.UpdateOptions{})
-	case "DaemonSet":
-		res, err = pd.Client.AppsClient.DaemonSets(pd.Namespace).Update(context.TODO(), obj.(*appsv1.DaemonSet), metav1.UpdateOptions{})
-	case "ReplicaSet":
-		res, err = pd.Client.AppsClient.ReplicaSets(pd.Namespace).Update(context.TODO(), obj.(*appsv1.ReplicaSet), metav1.UpdateOptions{})
-	default:
-		panic(fmt.Errorf("unexpected Kind: %s", kind))
-	}
-	if err != nil {
-		panic(fmt.Errorf("failed to update resource of kind %s: %+v", kind, err))
-	}
-	return res
+func (pd *PodDelve) GetResource(kind string, name string) {
+	pd.interfaceFor(kind, name)
 }
 
 func objectName(r runtime.Object) string {
 	return mirror.Reflect(r).GetPath("Name").Value().String()
 }
 
+func (pd *PodDelve) interfaceFor(kind string, namespace string) *mirror.Reflection {
+	var client interface{} = pd.Client.AppsClient
+	if kind == "Pod" {
+		client = pd.Client.CoreClient
+	}
+	return mirror.Reflect(client).GetPath(kind + "s").Exec(namespace).Ret()[0]
+}
+
 func (pd *PodDelve) UpdateResource(obj runtime.Object) runtime.Object {
 	reflector := mirror.Reflect(obj)
 	kind := reflector.GetPath("/Kind").Value().String()
-	var client *mirror.Reflection
-	if kind == "Pod" {
-		client = mirror.Reflect(pd.Client.CoreClient)
-	} else {
-		client = mirror.Reflect(pd.Client.AppsClient)
-	}
-
-	ret := client.GetPath(kind + "s").Exec(pd.Namespace).Ret()[0].GetPath("Update").
-		Exec(context.TODO(), obj, metav1.UpdateOptions{}).Ret()
+	ret := pd.interfaceFor(kind, pd.Namespace).GetPath("Update").Exec(context.TODO(), obj, metav1.UpdateOptions{}).Ret()
 	err := ret[1].Value().Interface().(error)
 	if err != nil {
 		panic(fmt.Errorf("failed to update resource of kind %s: %+v", kind, err))
@@ -136,17 +137,11 @@ func (pd *PodDelve) UpdateResource(obj runtime.Object) runtime.Object {
 
 func (pd *PodDelve) Relaunch(pod *v1.Pod) {
 	kind, resource := pd.getRootResource(pod)
+	pd.deployAdmissionWebhook()
+
 	pd.addSkavoAnnotations(resource)
-	pd.createEntryPointConfigMap(pod.Namespace)
-
-	if kind == "Pod" {
-		_, err := pd.Client.CoreClient.Pods(pod.Namespace).Update(context.TODO(), pod, metav1.UpdateOptions{})
-		if err != nil {
-			panic(fmt.Errorf("failed to updated Pod: %+v", err))
-		}
-	} else {
-
-		resource = pd.updateResource(kind, resource)
+	resource = pd.UpdateResource(resource)
+	if kind != "Pod" {
 		cnt, err := pd.readyCount(kind, objectName(resource))
 		for cnt < 1 {
 			if err != nil {
@@ -170,8 +165,8 @@ func (pd *PodDelve) Relaunch(pod *v1.Pod) {
 			panic(fmt.Errorf("failed to get pod list: %+v", err))
 		}
 		pd.PodName = podList.Items[0].Name
-		pd.ForwardPort()
 	}
+	pd.ForwardPort()
 }
 
 func (pd *PodDelve) addSkavoAnnotations(resource runtime.Object) {
@@ -259,10 +254,25 @@ func (pd *PodDelve) getRootResource(pod *v1.Pod) (string, runtime.Object) {
 	return kind, root
 }
 
-func (pd *PodDelve) createEntryPointConfigMap(namespace string) {
-	configMap, err := pd.Client.CoreClient.ConfigMaps(namespace).Get(context.TODO(), configMapName, metav1.GetOptions{})
+func (pd *PodDelve) createSkavoNamespace() {
+	ns, err := pd.Client.CoreClient.Namespaces().Get(context.TODO(), skavoNamespace, metav1.GetOptions{})
+	if err != nil || ns == nil {
+		_, err := pd.Client.CoreClient.Namespaces().Get(context.TODO(), skavoNamespace, metav1.GetOptions{})
+		if err != nil {
+			panic("failed to create skavo namespace")
+		} else {
+			fmt.Printf("Created Namespace %s", skavoNamespace)
+		}
+	}
+}
+
+func (pd *PodDelve) createEntryPointConfigMap() *v1.ConfigMap {
+	configMap, err := pd.Client.CoreClient.ConfigMaps(skavoNamespace).Get(context.TODO(), configMapName, metav1.GetOptions{})
 	if err != nil || configMap == nil {
-		key, cert, err := GenerateSelfCaSignedTLSCertFiles(namespace)
+		caKey, caCert, err := GenerateKeyAndCert(skavoNamespace, true)
+		tlsKey, tlsCert, err := GenerateKeyAndCert(skavoNamespace, false)
+		caKeyPem, caCertPem, err := GenerateCertPEMFiles(caCert, caKey, caCert, caKey)
+		tlsKeyPem, tlsCertPem, err := GenerateCertPEMFiles(tlsCert, tlsKey, caCert, caKey)
 		if err != nil {
 			panic(fmt.Errorf("failed to create self signed cert: %+v", err))
 		}
@@ -270,52 +280,256 @@ func (pd *PodDelve) createEntryPointConfigMap(namespace string) {
 		data := make(map[string]string)
 		data[skavoEntrypointShName] = skavoEntrypoint
 		binaryData := make(map[string][]byte)
-		binaryData["webhook-tls-key"] = key
-		binaryData["webhook-tls-cert"] = cert
+		binaryData["webhook-tls-key"] = tlsKeyPem
+		binaryData["webhook-tls-cert"] = tlsCertPem
+		binaryData["webhook-ca-key"] = caKeyPem
+		binaryData["webhook-ca-cert"] = caCertPem
 
 		configMap = &v1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      configMapName,
-				Namespace: namespace,
+				Namespace: skavoNamespace,
 			},
 			Immutable:  &immutable,
 			Data:       data,
 			BinaryData: binaryData,
 		}
-		_, err = pd.Client.CoreClient.ConfigMaps(namespace).Create(context.TODO(), configMap, metav1.CreateOptions{})
+		configMap, err = pd.Client.CoreClient.ConfigMaps(skavoNamespace).Create(context.TODO(), configMap, metav1.CreateOptions{})
 		if err != nil {
 			panic(fmt.Errorf("failed to create config map: %+v", err))
 		} else {
 			fmt.Printf("Created ConfigMap %s", configMapName)
 		}
 	}
+	return configMap
 }
 
-func (pd *PodDelve) deployAdmissionWebhook(namespace string) {
-	configMap, err := pd.Client.CoreClient.ConfigMaps(namespace).Get(context.TODO(), configMapName, metav1.GetOptions{})
-	if err != nil || configMap == nil {
-		immutable := false
-		data := make(map[string]string)
-		data[skavoEntrypointShName] = skavoEntrypoint
-
-		configMap = &v1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      configMapName,
-				Namespace: namespace,
+func (pd *PodDelve) deployAdmissionWebhook() {
+	pd.createSkavoNamespace()
+	pd.createEntryPointConfigMap()
+	secret := pd.createSignedCertSecret()
+	webhook, err := pd.Client.AdmissionClient.MutatingWebhookConfigurations().Get(context.TODO(), skavoWebhookName, metav1.GetOptions{})
+	if err != nil || webhook == nil {
+		webhook = &regv1.MutatingWebhookConfiguration{
+			TypeMeta:   metav1.TypeMeta{},
+			ObjectMeta: metav1.ObjectMeta{},
+			Webhooks: []regv1.MutatingWebhook{
+				{
+					Name: "",
+					//TODO use CSR to have cluster sign generated cert using this method:
+					//https://github.com/JoelSpeed/webhook-certificate-generator/blob/master/pkg/certgenerator/run.go
+					ClientConfig: regv1.WebhookClientConfig{
+						URL:      nil,
+						Service:  nil,
+						CABundle: secret.Data["webhook-ca-cert"],
+					},
+					Rules:                   nil,
+					FailurePolicy:           nil,
+					MatchPolicy:             nil,
+					NamespaceSelector:       nil,
+					ObjectSelector:          nil,
+					SideEffects:             nil,
+					TimeoutSeconds:          nil,
+					AdmissionReviewVersions: nil,
+					ReinvocationPolicy:      nil,
+				},
 			},
-			Immutable: &immutable,
-			Data:      data,
 		}
-		_, err := pd.Client.CoreClient.ConfigMaps(namespace).Create(context.TODO(), configMap, metav1.CreateOptions{})
+		_, err = pd.Client.AdmissionClient.MutatingWebhookConfigurations().Create(context.TODO(), webhook, metav1.CreateOptions{})
 		if err != nil {
-			panic(fmt.Errorf("failed to create config map: %+v", err))
+			panic(fmt.Errorf("failed to create webhook config: %+v", err))
 		} else {
 			fmt.Printf("Created ConfigMap %s", configMapName)
 		}
 	}
 }
 
-const (
-	configMapName         = "skavo-entrypoint-sh"
-	skavoEntrypointShName = "/skavoEntrypoint.sh"
-)
+func (pd *PodDelve) CreateCertSecret() *v1.Secret {
+	privateKey := GenerateKey()
+
+	csrPem := CreateCSRPem(skavoNamespace, skavoWebhookServiceName, privateKey)
+
+	csr := &certificatesv1.CertificateSigningRequest{
+		TypeMeta: metav1.TypeMeta{Kind: "CertificateSigningRequest"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("%s.%s", skavoWebhookServiceName, skavoNamespace),
+		},
+		Spec: certificatesv1.CertificateSigningRequestSpec{
+			Request: csrPem,
+			Usages: []certificatesv1.KeyUsage{
+				certificatesv1.UsageDigitalSignature,
+				certificatesv1.UsageKeyEncipherment,
+				certificatesv1.UsageServerAuth,
+			},
+		},
+	}
+	created, err := pd.Client.CertsClient.CertificateSigningRequests().Create(context.TODO(), csr, metav1.CreateOptions{})
+	if err != nil {
+		panic(fmt.Errorf("failed to create CSR: %+v", err))
+	}
+	created.Status.Conditions = append(created.Status.Conditions,
+		certificatesv1.CertificateSigningRequestCondition{
+			Type:           certificatesv1.CertificateApproved,
+			Reason:         "SkavoSelfApproved",
+			Message:        "Good luck debugging!",
+			LastUpdateTime: metav1.Now(),
+		},
+	)
+
+	_, err = pd.Client.CertsClient.CertificateSigningRequests().UpdateApproval(context.TODO(), created.Name, created, metav1.UpdateOptions{})
+	if err != nil {
+		panic(fmt.Errorf("failed to approve csr: %+v", err))
+	}
+
+	//wait for cert
+	_ = wait.PollImmediate(time.Second*2, time.Minute*10, func() (bool, error) {
+		csr, err = pd.Client.CertsClient.CertificateSigningRequests().Get(context.TODO(), created.Name, metav1.GetOptions{})
+		if err != nil {
+			return false, fmt.Errorf("couldn't get CSR: %v", err)
+		}
+		if len(csr.Status.Certificate) > 0 {
+			return true, nil
+		}
+		fmt.Printf("Waiting for Certificate...")
+		return false, nil
+	})
+
+	secret := &v1.Secret{
+		TypeMeta: metav1.TypeMeta{},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      skavoWebhookSecretName,
+			Namespace: skavoNamespace,
+		},
+		Data: map[string][]byte{
+			"key.pem":  PrivateKeyPem(privateKey),
+			"cert.pem": csr.Status.Certificate,
+		},
+		Type: "",
+	}
+
+	createdSecret, err := pd.Client.CoreClient.Secrets(skavoNamespace).Create(context.TODO(), secret, metav1.CreateOptions{})
+	if err != nil {
+		panic(fmt.Errorf("failed to create secret: %+v", err))
+	}
+	return createdSecret
+}
+
+func (pd *PodDelve) GetSecret(name string) *v1.Secret {
+	secret, err := pd.Client.CoreClient.Secrets(skavoNamespace).Get(context.TODO(), name, metav1.GetOptions{})
+	if err != nil {
+		panic(fmt.Errorf("failed to fetch secret: %+v", err))
+	}
+	return secret
+}
+
+func (pd *PodDelve) writeCABundleToSecret(secretName string) {
+	secret := pd.GetSecret(secretName)
+	const caBundleKey = "caBundle"
+	if _, ok := secret.Data[caBundleKey]; ok {
+		return
+	}
+
+	serviceAccount := &v1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      skavoServiceAccount,
+			Namespace: skavoNamespace,
+		},
+	}
+	_, err := pd.Client.CoreClient.ServiceAccounts(skavoNamespace).Create(context.TODO(), serviceAccount, metav1.CreateOptions{})
+	if err != nil {
+		panic(fmt.Errorf("failed to create service account: %+v", err))
+	}
+
+	clusterRole := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: skavoClusterRole,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				Verbs:     []string{"get", "patch"},
+				Resources: []string{"secrets"},
+			},
+		},
+		AggregationRule: nil,
+	}
+
+	_, err = pd.Client.RbacClient.ClusterRoles().Create(context.TODO(), clusterRole, metav1.CreateOptions{})
+	if err != nil {
+		panic(fmt.Errorf("failed to create cluster role: %+v", err))
+	}
+
+	clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      skavoClusterRoleBinding,
+			Namespace: skavoNamespace,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     skavoClusterRole,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      skavoServiceAccount,
+				Namespace: skavoNamespace,
+			},
+		},
+	}
+
+	_, err = pd.Client.RbacClient.ClusterRoleBindings().Create(context.TODO(), clusterRoleBinding, metav1.CreateOptions{})
+	if err != nil {
+		panic(fmt.Errorf("failed to create clusterRoleBinding"))
+	}
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "load-ca-bundle",
+			Namespace: skavoNamespace,
+		},
+		Spec: batchv1.JobSpec{
+			Template: v1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ca-bundle-loader",
+				},
+				Spec: v1.PodSpec{
+					ServiceAccountName: skavoServiceAccount,
+					Containers: []v1.Container{
+						{
+							Name:    "",
+							Image:   "kubectl",
+							Command: []string{"kubectl"},
+							Args: []string{"patch", "secret", "-n", skavoNamespace, secretName, "-p",
+								"{\"data\":" +
+									"{" +
+									"\"" + caBundleKey + "\":\"$(base64 < /run/secrets/kubernetes.io/serviceaccount/ca.crt | tr -d '\\n')\"" +
+									"}" +
+									"}"},
+						},
+					},
+				},
+			},
+		},
+		Status: batchv1.JobStatus{},
+	}
+
+	_, err = pd.Client.BatchClient.Jobs(skavoNamespace).Create(context.TODO(), job, metav1.CreateOptions{})
+
+	if err != nil {
+		panic(fmt.Errorf("failed to create job: +%v", err))
+	}
+
+	secret = pd.GetSecret(secretName)
+	_, ok := secret.Data[caBundleKey]
+	if ok {
+		return
+	}
+	_ = wait.PollImmediate(time.Second*2, time.Minute*10, func() (bool, error) {
+		secret = pd.GetSecret(secretName)
+		_, ok = secret.Data[caBundleKey]
+		if !ok {
+			println("Waiting for caBundle to get loaded...")
+		}
+		return ok, nil
+	})
+}

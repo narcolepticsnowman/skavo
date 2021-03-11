@@ -17,8 +17,12 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
+	regv1client "k8s.io/client-go/kubernetes/typed/admissionregistration/v1"
 	appsv1client "k8s.io/client-go/kubernetes/typed/apps/v1"
+	batchv1client "k8s.io/client-go/kubernetes/typed/batch/v1"
+	certsv1client "k8s.io/client-go/kubernetes/typed/certificates/v1"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
+	rbacv1client "k8s.io/client-go/kubernetes/typed/rbac/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/portforward"
@@ -27,9 +31,13 @@ import (
 )
 
 type Client struct {
-	CoreClient *corev1client.CoreV1Client
-	AppsClient *appsv1client.AppsV1Client
-	config     *rest.Config
+	CoreClient      *corev1client.CoreV1Client
+	AppsClient      *appsv1client.AppsV1Client
+	AdmissionClient *regv1client.AdmissionregistrationV1Client
+	CertsClient     *certsv1client.CertificatesV1Client
+	BatchClient     *batchv1client.BatchV1Client
+	RbacClient      *rbacv1client.RbacV1Client
+	config          *rest.Config
 }
 
 func NewK8sClient(context string, kubeconfig *string) *Client {
@@ -40,7 +48,15 @@ func NewK8sClient(context string, kubeconfig *string) *Client {
 	if err != nil {
 		panic(fmt.Errorf("failed to build config %w", err))
 	}
-	return &Client{corev1client.NewForConfigOrDie(config), appsv1client.NewForConfigOrDie(config), config}
+	return &Client{
+		corev1client.NewForConfigOrDie(config),
+		appsv1client.NewForConfigOrDie(config),
+		regv1client.NewForConfigOrDie(config),
+		certsv1client.NewForConfigOrDie(config),
+		batchv1client.NewForConfigOrDie(config),
+		rbacv1client.NewForConfigOrDie(config),
+		config,
+	}
 }
 
 func (kc *Client) ListPods(namespace string) *v1.PodList {

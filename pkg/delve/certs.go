@@ -6,32 +6,27 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"time"
 )
 
-//returns key, cert
-func GenerateSelfCaSignedTLSCertFiles(namespace string) ([]byte, []byte, error) {
-	caData := NewCertData(namespace, true)
-	tlsData := NewCertData(namespace, false)
-	caKey, err := rsa.GenerateKey(rand.Reader, 4096)
+func GenerateKeyAndCert(namespace string, isCa bool) (*rsa.PrivateKey, *x509.Certificate, error) {
+	cert := NewCertData(namespace, true)
+	key, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
 		return nil, nil, err
 	}
-	tlsKey, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		return nil, nil, err
-	}
-	return GenerateCertPEMFiles(tlsData, tlsKey, caData, caKey)
+	return key, cert, nil
 }
 
 func NewCertData(namespace string, isCa bool) *x509.Certificate {
 	return &x509.Certificate{
 		SerialNumber: big.NewInt(420),
 		Subject: pkix.Name{
-			CommonName:    "skavo-webhook." + namespace + ".svc",
+			CommonName:    skavoWebhookName + "." + namespace + ".svc",
 			Organization:  []string{"Skavo"},
 			Country:       []string{"US"},
 			Province:      []string{""},
@@ -75,4 +70,54 @@ func GenerateCertPEMFiles(certData *x509.Certificate, certKey *rsa.PrivateKey, c
 		return nil, nil, fmt.Errorf("failed to encode key: %+v", err)
 	}
 	return pemKey.Bytes(), pemCert.Bytes(), nil
+}
+
+func GenerateKey() *rsa.PrivateKey {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(fmt.Errorf("couldn't create private key: %v", err))
+	}
+	return privateKey
+}
+
+func PrivateKeyPem(key *rsa.PrivateKey) []byte {
+	return pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	})
+}
+
+func CreateCSRPem(namespace string, serviceName string, privateKey *rsa.PrivateKey) []byte {
+	extensionValue, err := asn1.Marshal(BasicConstraints{false, 0})
+	if err != nil {
+		panic(fmt.Errorf("failed to marshal basic constraints: %+v", err))
+	}
+	request := x509.CertificateRequest{
+		Subject: pkix.Name{
+			CommonName: fmt.Sprintf("%s.%s.svc", serviceName, namespace),
+		},
+		DNSNames: []string{
+			serviceName,
+			fmt.Sprintf("%s.%s", serviceName, namespace),
+			fmt.Sprintf("%s.%s.svc", serviceName, namespace),
+		},
+		Extensions: []pkix.Extension{
+			{
+				Id:       asn1.ObjectIdentifier{2, 5, 29, 19},
+				Value:    extensionValue,
+				Critical: true,
+			},
+		},
+	}
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &request, privateKey)
+	if err != nil {
+		panic(fmt.Errorf("failed to create CSR: %+v", err))
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr})
+}
+
+// BasicConstraints CSR information RFC 5280, 4.2.1.9
+type BasicConstraints struct {
+	IsCA       bool `asn1:"optional"`
+	MaxPathLen int  `asn1:"optional,default:-1"`
 }
