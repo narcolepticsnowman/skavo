@@ -1,4 +1,4 @@
-module github.com/narcolepticsnowman/skavo/admission-webhook
+module github.com/ncsnw/skavo/admission-webhook
 
 go 1.15
 

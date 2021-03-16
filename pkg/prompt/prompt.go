@@ -8,7 +8,7 @@ import (
 	"github.com/AlecAivazis/survey/v2"
 	v1 "k8s.io/api/core/v1"
 
-	"github.com/narcolepticsnowman/skavo/pkg/k8s"
+	"github.com/ncsnw/skavo/pkg/k8s"
 )
 
 func SelectPod(pods []v1.Pod) *v1.Pod {

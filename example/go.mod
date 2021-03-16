@@ -1,3 +1,3 @@
-module github.com/narcolepticsnowman/skavo/tick
+module github.com/ncsnw/skavo/tick
 
 go 1.15

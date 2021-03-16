@@ -13,7 +13,7 @@ If you do choose to run this in production, I hope you said your prayers and hav
 # Usage
 First, install it (go >= 1.16)
 ```shell
-go install github.com/narcolepticsnowman/skavo@latest
+go install github.com/ncsnw/skavo@latest
 ```
 
 Then run skavo (assuming you have $GOPATH/bin added to your $PATH)

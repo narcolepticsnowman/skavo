@@ -22,7 +22,7 @@ import (
 
 	"github.com/narcolepticsnowman/go-mirror/mirror"
 
-	"github.com/narcolepticsnowman/skavo/pkg/k8s"
+	"github.com/ncsnw/skavo/pkg/k8s"
 )
 
 const (
