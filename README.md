@@ -5,7 +5,7 @@ Skavo opens a remote debugging tunnel to a go process in a pod.
 
 To use, first get it (go >= 1.16)
 ```shell
-go install github.com/narcolepticsnowman/skavo@latest
+go install github.com/ncsnw/skavo@latest
 ```
 
 Then run skavo (assuming you have $GOPATH/bin added to your $PATH)

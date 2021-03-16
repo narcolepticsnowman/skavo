@@ -10,9 +10,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/homedir"
 
-	"github.com/narcolepticsnowman/skavo/pkg/delve"
-	"github.com/narcolepticsnowman/skavo/pkg/k8s"
-	"github.com/narcolepticsnowman/skavo/pkg/prompt"
+	"github.com/ncsnw/skavo/pkg/delve"
+	"github.com/ncsnw/skavo/pkg/k8s"
+	"github.com/ncsnw/skavo/pkg/prompt"
 )
 
 func main() {

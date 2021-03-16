@@ -1,4 +1,4 @@
-module github.com/narcolepticsnowman/skavo
+module github.com/ncsnw/skavo
 
 go 1.15
 

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/narcolepticsnowman/skavo/pkg/k8s"
+	"github.com/ncsnw/skavo/pkg/k8s"
 )
 
 type PodDelve struct {
