@@ -46,7 +46,7 @@ func updatePodSpec(annotations map[string]string, spec corev1.PodSpec) (corev1.P
 	}
 
 	container.Command = []string{annotations["skavo.cmd"]}
-	container.Args = strings.Split(annotations["skavo.args"], " ")
+	container.Args = strings.Split(strings.Trim(annotations["skavo.args"], "\""), "\" \"")
 	configMapName := annotations["skavo.cfgMap"]
 	var mode int32 = 0o755
 	optional := false

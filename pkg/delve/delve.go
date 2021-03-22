@@ -1,6 +1,7 @@
 package delve
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -17,7 +18,6 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/narcolepticsnowman/go-mirror/mirror"
@@ -61,7 +61,7 @@ func (pd *PodDelve) RestartProcess() {
 	pd.InstallDelve()
 	fmt.Printf("Relaunching pid %d with delve\n", pd.Process.Pid)
 	go func() {
-		args := append([]string{pd.PodPort, strconv.Itoa(pd.Process.Pid)}, strings.Split(pd.Process.Command, " ")...)
+		args := append([]string{pd.PodPort, strconv.Itoa(pd.Process.Pid)}, pd.Process.Command...)
 		pd.runScript(delveExec, "delveExec.sh", args...)
 	}()
 	pd.ForwardPort()
@@ -174,7 +174,7 @@ func (pd *PodDelve) addSkavoAnnotations(resource runtime.Object) {
 	annotations := meta.GetAnnotations()
 	annotations["skavo.container"] = pd.ContainerName
 	annotations["skavo.cmd"] = skavoEntrypointShName
-	annotations["skavo.args"] = pd.PodPort + " " + pd.Process.Command
+	annotations["skavo.args"] = "\"" + pd.PodPort + "\" \"" + strings.Join(pd.Process.Command, "\" \"") + "\""
 	annotations["skavo.cfgMap"] = configMapName
 	meta.SetAnnotations(annotations)
 }
@@ -189,17 +189,33 @@ func (pd *PodDelve) AttachToProcess() {
 }
 
 func (pd *PodDelve) Exec(cmd ...string) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		panic(fmt.Errorf("failed to create pipe: %+v", err))
+	}
+
 	pd.Client.Exec(
 		pd.PodName,
 		pd.Namespace,
 		pd.ContainerName,
 		cmd,
 		k8s.ExecOptions{
-			Out:    os.Stdout,
+			Out:    writer,
 			In:     nil,
 			ErrOut: os.Stderr,
 		},
 	)
+
+	//make it execute synchronously by waiting for EOF
+	outReader := bufio.NewReader(reader)
+	line, err := outReader.ReadString('\n')
+	for err == nil && err != io.EOF {
+		_, err = io.WriteString(os.Stdout, line)
+		if err != nil {
+			panic(fmt.Errorf("failed to write to output: %+v", err))
+		}
+		line, err = outReader.ReadString('\n')
+	}
 }
 
 func (pd *PodDelve) ExecWrite(in io.Reader, cmd ...string) {
@@ -307,7 +323,7 @@ func (pd *PodDelve) createEntryPointConfigMap() *v1.ConfigMap {
 func (pd *PodDelve) deployAdmissionWebhook() {
 	pd.createSkavoNamespace()
 	pd.createEntryPointConfigMap()
-	secret := pd.createSignedCertSecret()
+	secret := pd.CreateCertSecret()
 	webhook, err := pd.Client.AdmissionClient.MutatingWebhookConfigurations().Get(context.TODO(), skavoWebhookName, metav1.GetOptions{})
 	if err != nil || webhook == nil {
 		webhook = &regv1.MutatingWebhookConfiguration{

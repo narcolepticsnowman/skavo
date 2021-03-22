@@ -69,7 +69,7 @@ func (kc *Client) ListPods(namespace string) *v1.PodList {
 
 type ContainerProcess struct {
 	Pid     int
-	Command string
+	Command []string
 }
 
 func (kc *Client) ListProcesses(pod *v1.Pod, containerName string) []ContainerProcess {
@@ -78,22 +78,35 @@ func (kc *Client) ListProcesses(pod *v1.Pod, containerName string) []ContainerPr
 		pod.Name,
 		pod.Namespace,
 		containerName,
-		[]string{"sh", "-c", "rs=$(printf \"\\036\") && ps -ef|grep -v \"ps -ef\\|xargs\\|tr .\\|tr n\\|<defunct>\"|tr '\\n' \"$rs\"|xargs|tr \"$rs\" '\\n'"},
+		[]string{"sh", "-c",
+			//ps isn't very consistent, so
+			"for p in $(find /proc -maxdepth 1|grep -E \"/[0-9]+$\"); do " +
+				"pid=$(echo \"$p\"|cut -d/ -f3); " +
+				"echo removethisline; " +
+				"if [ -f \"$p\"/cmdline ]; then " +
+				"cmd=$(xargs -0 -n1 < \"$p\"/cmdline |sed '/^$/d'|sed -E 's/^(.*)$/\"\\1\"/'|tr '\\n' ' '); " +
+				"fi; " +
+				"if [ ! -z \"$cmd\" ]; then " +
+				"echo \"$pid|$cmd\"; " +
+				"fi; " +
+				"done | grep -v removethisline",
+		},
 		ExecOptions{
-			Out: out,
+			Out:    out,
+			ErrOut: os.Stderr,
 		},
 	)
-
+	//for p in $(find /proc -maxdepth 1|grep -E "/[0-9]+$"); do pid=$(echo "$p"|cut -d/ -f3);
 	output := out.String()
 	lines := strings.Split(output, "\n")
 	processes := make([]ContainerProcess, 0)
-	for _, line := range lines[1:] {
+	for _, line := range lines {
 		line = strings.Trim(line, " \t")
-		if strings.Contains(line, "ps -ef") || line == "" {
+		if line == "" {
 			continue
 		}
-		parts := strings.Split(line, " ")
-		pid, err := strconv.Atoi(strings.Trim(parts[1], " \t\n"))
+		parts := strings.Split(line, "|")
+		pid, err := strconv.Atoi(strings.Trim(parts[0], " \t\n"))
 		if err != nil {
 			panic(err)
 		}

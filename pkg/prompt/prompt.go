@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
 	v1 "k8s.io/api/core/v1"
@@ -39,7 +40,7 @@ func SelectProcess(processList []k8s.ContainerProcess, processFilter string) k8s
 	if processFilter != "" {
 		filtered := []k8s.ContainerProcess{}
 		for _, process := range processList {
-			if match, _ := regexp.MatchString(processFilter, process.Command); match {
+			if match, _ := regexp.MatchString(processFilter, strings.Join(process.Command, " ")); match {
 				filtered = append(filtered, process)
 			}
 		}
@@ -51,7 +52,7 @@ func SelectProcess(processList []k8s.ContainerProcess, processFilter string) k8s
 	}
 	commands := make([]string, len(processList))
 	for i, command := range processList {
-		commands[i] = command.Command
+		commands[i] = strings.Join(command.Command, " ")
 	}
 
 	return processList[GetSelection("Select a Process:", commands)]
