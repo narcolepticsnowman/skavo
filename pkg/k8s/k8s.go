@@ -108,9 +108,10 @@ func (kc *Client) ListProcesses(pod *v1.Pod, containerName string) []ContainerPr
 		parts := strings.Split(line, "|")
 		pid, err := strconv.Atoi(strings.Trim(parts[0], " \t\n"))
 		if err != nil {
-			panic(err)
+			panic(fmt.Errorf("unexpected output \n\n%s\n\n %+v", output, err))
 		}
-		processes = append(processes, ContainerProcess{Pid: pid, Command: strings.Join(parts[7:], " ")})
+		cmd := strings.Split(strings.Trim(parts[1], "\""), "\" \"")
+		processes = append(processes, ContainerProcess{Pid: pid, Command: cmd})
 	}
 	return processes
 }
