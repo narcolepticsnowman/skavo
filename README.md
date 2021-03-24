@@ -51,10 +51,6 @@ pods.
 In the restart mode, (specified with the flag `-restart`), the only change from the default attach mode is that the existing
 process is killed, and restarted using `dlv exec`. This allows for debugging startup behavior.
 
-In some cases, this is not enough to debug the entire startup behavior, due to InitContainer processes, side-cars, etc.
-For these cases, you can choose use `mutate` option. In this mode, skavo will deploy an admission webhook controller
-that will modify the target container's command to be dlv exec of the specified process. 
-
 ### Note about project layout
 To ensure debugging will work correctly in delve, build the go binary in the dockerfile, ensure you have the project 
 checked out to the appropriate $GOPATH/src directory, and use go install to install the module in the dockerfile.
