@@ -46,9 +46,18 @@ else
 	cd $GOPATH/src/github.com/go-delve
 	git clone https://github.com/go-delve/delve
 	cd delve/cmd/dlv
-	go build >/dev/null
+	go build
 	mkdir -p $GOPATH/bin
 	mv dlv $GOPATH/bin/dlv
+fi
+`
+	doInstallDelve = `
+#!/bin/sh
+rm /tmp/skavo/installsuccess /tmp/skavo/installfail 2>/dev/null
+if sh /tmp/skavo/installDelve.sh > /tmp/skavo/install.log 2>&1 ;then
+	touch /tmp/skavo/installsuccess
+else
+	touch /tmp/skavo/installfail
 fi
 `
 	skavoEntrypoint = installDelve + `

@@ -5,13 +5,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/spf13/cobra"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
+
+	"github.com/spf13/cobra"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,6 +26,8 @@ import (
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 	"k8s.io/kubectl/pkg/util"
+
+	util2 "github.com/ncsnw/skavo/pkg/util"
 )
 
 // PortForwardOptions contains all the options for running the port-forward cli command.
@@ -51,14 +54,10 @@ type defaultPortForwarder struct {
 
 func (f *defaultPortForwarder) ForwardPorts(method string, url *url.URL, opts PortForwardOptions) error {
 	transport, upgrader, err := spdy.RoundTripperFor(opts.Config)
-	if err != nil {
-		return err
-	}
+	util2.MaybePanic(err)
 	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, method, url)
 	fw, err := portforward.NewOnAddresses(dialer, opts.Address, opts.Ports, opts.StopChannel, opts.ReadyChannel, f.Out, f.ErrOut)
-	if err != nil {
-		return err
-	}
+	util2.MaybePanic(err)
 	return fw.ForwardPorts()
 }
 
@@ -215,9 +214,7 @@ func (o *PortForwardOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, arg
 	}
 
 	o.Namespace, _, err = f.ToRawKubeConfigLoader().Namespace()
-	if err != nil {
-		return err
-	}
+	util2.MaybePanic(err)
 
 	builder := f.NewBuilder().
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
@@ -233,14 +230,10 @@ func (o *PortForwardOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, arg
 	builder.ResourceNames("pods", resourceName)
 
 	obj, err := builder.Do().Object()
-	if err != nil {
-		return err
-	}
+	util2.MaybePanic(err)
 
 	forwardablePod, err := polymorphichelpers.AttachablePodForObjectFn(f, obj, getPodTimeout)
-	if err != nil {
-		return err
-	}
+	util2.MaybePanic(err)
 
 	o.PodName = forwardablePod.Name
 
@@ -267,20 +260,14 @@ func (o *PortForwardOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, arg
 	}
 
 	clientset, err := f.KubernetesClientSet()
-	if err != nil {
-		return err
-	}
+	util2.MaybePanic(err)
 
 	o.PodClient = clientset.CoreV1()
 
 	o.Config, err = f.ToRESTConfig()
-	if err != nil {
-		return err
-	}
+	util2.MaybePanic(err)
 	o.RESTClient, err = f.RESTClient()
-	if err != nil {
-		return err
-	}
+	util2.MaybePanic(err)
 
 	o.StopChannel = make(chan struct{}, 1)
 	o.ReadyChannel = make(chan struct{})
@@ -306,9 +293,7 @@ func (o PortForwardOptions) Validate() error {
 // RunPortForward implements all the necessary functionality for port-forward cmd.
 func (o PortForwardOptions) RunPortForward() error {
 	pod, err := o.PodClient.Pods(o.Namespace).Get(context.TODO(), o.PodName, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
+	util2.MaybePanic(err)
 
 	if pod.Status.Phase != corev1.PodRunning {
 		return fmt.Errorf("unable to forward port because pod is not running. Current status=%v", pod.Status.Phase)

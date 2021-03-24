@@ -1,7 +1,7 @@
 package delve
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -23,6 +23,7 @@ import (
 	"github.com/narcolepticsnowman/go-mirror/mirror"
 
 	"github.com/ncsnw/skavo/pkg/k8s"
+	"github.com/ncsnw/skavo/pkg/util"
 )
 
 const (
@@ -49,7 +50,21 @@ type PodDelve struct {
 
 func (pd *PodDelve) InstallDelve() {
 	fmt.Println("Installing Delve...")
-	pd.runScript(installDelve, "installDelve.sh")
+	_, _, err := pd.Exec("mkdir", "-p", "/tmp/skavo")
+	util.MaybePanic(err)
+	pd.ExecWrite(strings.NewReader(installDelve), "/tmp/skavo/installDelve.sh")
+	pd.ExecWrite(strings.NewReader(doInstallDelve), "/tmp/skavo/doInstallDelve.sh")
+	pd.BgExec("nohup", "sh", "/tmp/skavo/doInstallDelve.sh")
+	util.MaybePanic(wait.PollImmediate(2*time.Second, 5*time.Minute, func() (done bool, err error) {
+		success, _, _ := pd.Exec("ls", "/tmp/skavo/installsuccess")
+		fail, _, _ := pd.Exec("ls", "/tmp/skavo/installfail")
+
+		if fail != "" {
+			return false, fmt.Errorf("delve install failed")
+		}
+		fmt.Println("Waiting for Delve install to finish...")
+		return success != "", nil
+	}))
 }
 
 func (pd *PodDelve) ForwardPort() {
@@ -145,7 +160,7 @@ func (pd *PodDelve) Relaunch(pod *v1.Pod) {
 		cnt, err := pd.readyCount(kind, objectName(resource))
 		for cnt < 1 {
 			if err != nil {
-				panic(fmt.Errorf("failed to check read count: %+v", err))
+				panic(fmt.Errorf("failed to MaybePanic read count: %+v", err))
 			}
 			time.Sleep(1 * time.Second)
 			cnt, err = pd.readyCount(kind, objectName(resource))
@@ -188,53 +203,62 @@ func (pd *PodDelve) AttachToProcess() {
 	pd.ForwardPort()
 }
 
-func (pd *PodDelve) Exec(cmd ...string) {
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		panic(fmt.Errorf("failed to create pipe: %+v", err))
-	}
+func (pd *PodDelve) BgExec(cmd ...string) {
+	go func() {
+		util.MaybePanic(pd.Client.Exec(
+			pd.PodName,
+			pd.Namespace,
+			pd.ContainerName,
+			cmd,
+			k8s.ExecOptions{
+				Out:    nil,
+				In:     nil,
+				ErrOut: os.Stderr,
+			},
+		))
 
-	pd.Client.Exec(
+	}()
+}
+
+func (pd *PodDelve) Exec(cmd ...string) (string, string, error) {
+	out := bytes.NewBuffer([]byte{})
+	errOut := bytes.NewBuffer([]byte{})
+	err := pd.Client.Exec(
 		pd.PodName,
 		pd.Namespace,
 		pd.ContainerName,
 		cmd,
 		k8s.ExecOptions{
-			Out:    writer,
+			Out:    out,
 			In:     nil,
-			ErrOut: os.Stderr,
+			ErrOut: errOut,
 		},
 	)
 
-	//make it execute synchronously by waiting for EOF
-	outReader := bufio.NewReader(reader)
-	line, err := outReader.ReadString('\n')
-	for err == nil && err != io.EOF {
-		_, err = io.WriteString(os.Stdout, line)
-		if err != nil {
-			panic(fmt.Errorf("failed to write to output: %+v", err))
-		}
-		line, err = outReader.ReadString('\n')
-	}
+	return out.String(), errOut.String(), err
 }
 
-func (pd *PodDelve) ExecWrite(in io.Reader, cmd ...string) {
-	pd.Client.Exec(
+func (pd *PodDelve) ExecWrite(in io.Reader, fileName string) {
+	util.MaybePanic(pd.Client.Exec(
 		pd.PodName,
 		pd.Namespace,
 		pd.ContainerName,
-		cmd,
+		[]string{"sh", "-c", "cat /dev/stdin > " + fileName},
 		k8s.ExecOptions{
 			Out:    nil,
 			In:     in,
 			ErrOut: nil,
 		},
-	)
+	))
 }
 
 func (pd *PodDelve) runScript(src string, name string, args ...string) {
-	pd.ExecWrite(strings.NewReader(src), "sh", "-c", "cat /dev/stdin > /"+name)
-	pd.Exec("sh", "-c", "sh /"+name+" "+strings.Join(args, " ")+" 2>&1 &")
+	pd.ExecWrite(strings.NewReader(src), name)
+	_, errOut, err := pd.Exec("sh", "-c", "sh /"+name+" "+strings.Join(args, " ")+" 2>&1 &")
+	if err != nil {
+		panic(fmt.Errorf("%s %+v", errOut, err))
+	}
+	util.MaybePanic(err)
 }
 
 func (pd *PodDelve) getRootResource(pod *v1.Pod) (string, runtime.Object) {

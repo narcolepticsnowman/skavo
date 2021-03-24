@@ -28,6 +28,8 @@ import (
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/transport/spdy"
+
+	"github.com/ncsnw/skavo/pkg/util"
 )
 
 type Client struct {
@@ -61,9 +63,7 @@ func NewK8sClient(context string, kubeconfig *string) *Client {
 
 func (kc *Client) ListPods(namespace string) *v1.PodList {
 	pods, err := kc.CoreClient.Pods(namespace).List(context.TODO(), metav1.ListOptions{})
-	if err != nil {
-		panic(err.Error())
-	}
+	util.MaybePanic(err)
 	return pods
 }
 
@@ -74,7 +74,7 @@ type ContainerProcess struct {
 
 func (kc *Client) ListProcesses(pod *v1.Pod, containerName string) []ContainerProcess {
 	out := new(bytes.Buffer)
-	kc.Exec(
+	util.MaybePanic(kc.Exec(
 		pod.Name,
 		pod.Namespace,
 		containerName,
@@ -95,7 +95,7 @@ func (kc *Client) ListProcesses(pod *v1.Pod, containerName string) []ContainerPr
 			Out:    out,
 			ErrOut: os.Stderr,
 		},
-	)
+	))
 	//for p in $(find /proc -maxdepth 1|grep -E "/[0-9]+$"); do pid=$(echo "$p"|cut -d/ -f3);
 	output := out.String()
 	lines := strings.Split(output, "\n")
@@ -131,7 +131,7 @@ func (kc *Client) Exec(
 	container string,
 	command []string,
 	options ...ExecOptions,
-) {
+) error {
 	var opts ExecOptions
 	if len(options) > 0 {
 		opts = options[0]
@@ -156,16 +156,12 @@ func (kc *Client) Exec(
 	if err != nil {
 		panic(fmt.Errorf("failed to create executor: %+v", err))
 	}
-	//return p.Executor.Execute("POST", req.URL(), p.Config, p.In, p.Out, p.ErrOut, t.Raw, sizeQueue)
-	err = exec.Stream(remotecommand.StreamOptions{
+
+	return exec.Stream(remotecommand.StreamOptions{
 		Stdin:  opts.In,
 		Stdout: opts.Out,
 		Stderr: opts.ErrOut,
 	})
-
-	if err != nil {
-		panic(fmt.Errorf("failed to exec: %+v", err))
-	}
 }
 
 //mostly borrowed from https://github.com/ica10888/client-go-helper/blob/3402b59130e6b01d2a638942a85a5c4f613c3466/pkg/kubectl/cp.go
@@ -187,13 +183,13 @@ func (kc *Client) CopyToPod(namespace string, podName string, containerName stri
 	if len(destDir) > 0 {
 		cmdArr = append(cmdArr, "-C", destDir)
 	}
-	kc.Exec(
+	util.MaybePanic(kc.Exec(
 		podName,
 		namespace,
 		containerName,
 		cmdArr,
 		ExecOptions{reader, os.Stdout, os.Stderr},
-	)
+	))
 }
 
 func (kc *Client) ForwardPort(namespace string, podName string, localPort string, podPort string) <-chan struct{} {
@@ -239,9 +235,7 @@ func makeTar(srcPath, destPath string, writer io.Writer) {
 func recursiveTar(srcBase, srcFile, destBase, destFile string, tw *tar.Writer) error {
 	srcPath := path.Join(srcBase, srcFile)
 	matchedPaths, err := filepath.Glob(srcPath)
-	if err != nil {
-		return err
-	}
+	util.MaybePanic(err)
 	for _, fpath := range matchedPaths {
 		stat, err := os.Lstat(fpath)
 		if err != nil {
